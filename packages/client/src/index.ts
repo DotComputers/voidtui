@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
-import { VoidScene } from "./scene.ts";
+import { VoidScene, applyTheme } from "./scene.ts";
 import { Ambient } from "./ambient.ts";
 import { PostsLayer } from "./posts.ts";
 import { InputHandler } from "./input.ts";
 import { NetworkClient } from "./network.ts";
 import { suggestHandle } from "./identity.ts";
 import { initAccentFromConfig } from "./accent.ts";
+import { loadConfig } from "./config.ts";
+import { detectTerminalBackground } from "./theme.ts";
 import { ModalLayer } from "./modals/index.ts";
 import { HelpModal } from "./modals/help.ts";
 import { ConfigModal } from "./modals/config.ts";
@@ -22,6 +24,18 @@ const HANDLE_REGEX = /^[a-z0-9_-]{3,20}$/;
 async function main(): Promise<void> {
   // Load persisted accent before scene init so first render uses saved color.
   await initAccentFromConfig();
+
+  // Resolve theme BEFORE scene init: detection requires raw stdin access, which
+  // OpenTUI takes over once we initialize the renderer.
+  const cfg = await loadConfig();
+  let effectiveTheme: "dark" | "light" = "dark";
+  if (cfg.theme === "dark" || cfg.theme === "light") {
+    effectiveTheme = cfg.theme;
+  } else {
+    // "auto": query terminal background; fall back to dark on failure/timeout.
+    effectiveTheme = (await detectTerminalBackground()) ?? "dark";
+  }
+  applyTheme(effectiveTheme);
 
   const scene = new VoidScene();
   await scene.init();
@@ -57,6 +71,7 @@ async function main(): Promise<void> {
       handle: post.handle,
       body: post.body,
       ghost: post.ghost,
+      accent: post.accent,
     });
   });
   network.on("ownPost", (post) => {
@@ -64,6 +79,7 @@ async function main(): Promise<void> {
       handle: post.handle,
       body: post.body,
       ghost: post.ghost,
+      accent: post.accent,
     });
   });
 
@@ -80,7 +96,10 @@ async function main(): Promise<void> {
   await network.start();
 
   // Background auto-update: fire-and-forget. The current session keeps running
-  // on the old binary; next launch picks up any update we install.
+  // on the old binary; next launch picks up any update we install. runUpdate()
+  // refuses safely if we're running from source or execPath doesn't end in
+  // /void (the source-run guard — see updater.ts and the
+  // project-void-updater-source-run-guard memory).
   const platform = detectPlatform();
   if (platform) {
     void runUpdate({

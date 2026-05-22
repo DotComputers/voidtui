@@ -3,7 +3,7 @@ import { COLORS } from "../scene.ts";
 import { ACCENT_NAMES, ACCENT_PALETTE, type AccentName } from "../colors.ts";
 import { getAccent, saveAccent, setAccent } from "../accent.ts";
 import { identityPath } from "../identity.ts";
-import { configPath } from "../config.ts";
+import { configPath, loadConfig } from "../config.ts";
 import { CLIENT_VERSION } from "../version.ts";
 import type { Modal, ModalContext, ModalKeyEvent } from "./index.ts";
 
@@ -13,11 +13,26 @@ export class ConfigModal implements Modal {
   private accentLine: TextRenderable | null = null;
   private ctx: ModalContext | null = null;
   private committed = false;
+  private themeName: "auto" | "dark" | "light" = "auto";
+  private themeLine: TextRenderable | null = null;
 
   mount(container: BoxRenderable, ctx: ModalContext): void {
     this.ctx = ctx;
     this.accentSavedOriginal = getAccent();
     this.staged = this.accentSavedOriginal;
+
+    // Read the theme setting from config; this is shown as a read-only line.
+    // (Changes still go through editing config.json; live switching deferred.)
+    loadConfig()
+      .then((cfg) => {
+        this.themeName = cfg.theme;
+        if (this.themeLine) {
+          this.themeLine.content = `theme:         ${this.themeName}`;
+        }
+      })
+      .catch(() => {
+        // Best-effort; leave as the placeholder "auto".
+      });
 
     const inner = new BoxRenderable(ctx.renderer, {
       id: "config-inner",
@@ -51,6 +66,12 @@ export class ConfigModal implements Modal {
       content: `identity:      ${identityPath()}`,
       fg: COLORS.text,
     }));
+    this.themeLine = new TextRenderable(ctx.renderer, {
+      id: "config-theme",
+      content: `theme:         ${this.themeName}`,
+      fg: COLORS.text,
+    });
+    inner.add(this.themeLine);
     inner.add(new TextRenderable(ctx.renderer, {
       id: "config-version",
       content: `version:       v${CLIENT_VERSION}`,

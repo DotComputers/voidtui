@@ -293,6 +293,8 @@ function handlePost(ws: Sock, msg: PostMessage): void {
       ghost: msg.ghost,
       body: msg.body,
       created_at: createdAt,
+      // Strip accent for ghosts (same privacy contract as handle).
+      accent: msg.ghost ? undefined : msg.accent,
     },
     msg.pubkey,
   );

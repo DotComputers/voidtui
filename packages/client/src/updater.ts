@@ -139,7 +139,16 @@ export type UpdateResult =
   | { kind: "already-current" }
   | { kind: "unsupported-platform" }
   | { kind: "installed"; newVersion: string }
-  | { kind: "failed"; reason: string };
+  | { kind: "failed"; reason: string }
+  /**
+   * Refused to update because the running process doesn't look like a
+   * compiled void binary. Set when launched via `bun run` from source or
+   * when `execPath` doesn't end in `/void`. This guard prevents a serious
+   * bug where the updater would atomic-rename a downloaded void binary
+   * over the bun binary that's currently executing the source. See
+   * project-void-updater-source-run-guard memory for the discovery story.
+   */
+  | { kind: "refused"; reason: "from-source" | "wrong-execpath" };
 
 export type UpdateProgress =
   | { phase: "fetching-manifest" }
@@ -165,6 +174,23 @@ export type UpdateOptions = {
 export async function runUpdate(opts: UpdateOptions): Promise<UpdateResult> {
   const onProgress = opts.onProgress ?? (() => {});
   const provideManifest = opts.provideManifest ?? fetchManifest;
+
+  // Refuse to update when running from source (bun run): currentVersion is the
+  // "0.0.0-dev" sentinel AND execPath points at bun, not void. Without this
+  // check, the atomic-rename would clobber the user's bun binary.
+  if (opts.currentVersion === "0.0.0-dev") {
+    return { kind: "refused", reason: "from-source" };
+  }
+  // Defense-in-depth: even with a real version baked in, only rewrite paths
+  // that actually end in /void (or the Windows variant). Catches the case
+  // where a compiled void binary was copied somewhere weird.
+  if (
+    !opts.execPath.endsWith("/void") &&
+    !opts.execPath.endsWith("\\void.exe")
+  ) {
+    return { kind: "refused", reason: "wrong-execpath" };
+  }
+
   try {
     onProgress({ phase: "fetching-manifest" });
     const manifest = await provideManifest(opts.manifestUrl);

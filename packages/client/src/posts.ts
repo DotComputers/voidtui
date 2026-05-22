@@ -5,8 +5,10 @@ import {
   RGBA,
   type CliRenderer,
 } from "@opentui/core";
+import type { AccentName } from "@void/shared";
 import { COLORS } from "./scene.ts";
 import { getAccentHex } from "./accent.ts";
+import { ACCENT_PALETTE } from "./colors.ts";
 
 /**
  * Post layer for the void surface.
@@ -28,6 +30,12 @@ export type PostInput = {
   handle?: string; // undefined for ghost posts
   body: string;
   ghost: boolean;
+  /**
+   * Sender's accent at the time of the post. When set, this drives the handle
+   * color so each user sees others' posts in *their* color, not the receiver's
+   * local accent. Falls back to local accent if undefined (e.g. legacy posts).
+   */
+  accent?: AccentName;
 };
 
 export type SpawnResult = "spawned" | "no_slot" | "at_cap";
@@ -115,9 +123,14 @@ export class PostsLayer {
     });
     this.surface.add(container);
 
+    // Ghost: always the dim ghost-mark color (no identity leak).
+    // Non-ghost: sender's accent if known (per-message broadcast), else fall
+    // back to the receiver's local accent (legacy/missing data).
     const handleColor = input.ghost
       ? COLORS.postGhostMark
-      : RGBA.fromHex(getAccentHex());
+      : input.accent
+        ? RGBA.fromHex(ACCENT_PALETTE[input.accent])
+        : RGBA.fromHex(getAccentHex());
     container.add(
       new TextRenderable(this.renderer, {
         id: `${id}-handle`,

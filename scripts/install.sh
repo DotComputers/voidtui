@@ -71,10 +71,68 @@ mkdir -p "$DEST_DIR"
 mv "$TMPDIR_LOCAL/void" "$DEST"
 
 echo "installed void $VOID_VERSION to $DEST"
+
+# --- ensure DEST_DIR is on PATH ---
+#
+# If DEST_DIR is already on PATH we're done. Otherwise we auto-append an
+# `export PATH=...` line to the user's shell profile (idempotent), matching
+# what bun / rustup / homebrew / fnm / uv etc. do. Users who don't want their
+# profile modified can opt out with VOID_NO_PATH=1.
 case ":$PATH:" in
-  *":$DEST_DIR:"*) ;;
-  *) echo "" ;
-     echo "note: $DEST_DIR is not on your PATH." ;
-     echo "      add this to your shell profile:" ;
-     echo "        export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+  *":$DEST_DIR:"*)
+    # Already on PATH, nothing to do.
+    ;;
+  *)
+    if [ "${VOID_NO_PATH:-0}" = "1" ]; then
+      echo ""
+      echo "note: $DEST_DIR is not on your PATH; not modifying shell config"
+      echo "      (VOID_NO_PATH=1 set). To run void:"
+      echo "        $DEST"
+    else
+      shell_basename="$(basename "${SHELL:-/bin/sh}")"
+      profile_file=""
+      profile_line='export PATH="$HOME/.local/bin:$PATH"'
+      case "$shell_basename" in
+        zsh)
+          profile_file="$HOME/.zshrc"
+          ;;
+        bash)
+          # macOS bash users typically use ~/.bash_profile; Linux ~/.bashrc.
+          if [ "$OS" = "darwin" ] && [ -f "$HOME/.bash_profile" ]; then
+            profile_file="$HOME/.bash_profile"
+          else
+            profile_file="$HOME/.bashrc"
+          fi
+          ;;
+        fish)
+          profile_file="$HOME/.config/fish/config.fish"
+          profile_line='set -gx PATH "$HOME/.local/bin" $PATH'
+          ;;
+      esac
+
+      if [ -z "$profile_file" ]; then
+        # Unrecognized shell — fall back to the old printed-instructions path.
+        echo ""
+        echo "note: $DEST_DIR is not on your PATH."
+        echo "      add this to your shell profile:"
+        echo "        $profile_line"
+      elif [ -f "$profile_file" ] && grep -qF "$profile_line" "$profile_file" 2>/dev/null; then
+        # Line is already there from a previous install.
+        echo ""
+        echo "$profile_file already exports $DEST_DIR on PATH."
+        echo "open a new terminal or run:"
+        echo "  source $profile_file"
+        echo "then: void"
+      else
+        mkdir -p "$(dirname "$profile_file")"
+        printf '\n# Added by the void installer (https://void-relay.com/install)\n%s\n' \
+          "$profile_line" >> "$profile_file"
+        echo ""
+        echo "added $DEST_DIR to your PATH in $profile_file"
+        echo "open a new terminal or run:"
+        echo "  source $profile_file"
+        echo "then: void"
+      fi
+    fi
+    ;;
 esac

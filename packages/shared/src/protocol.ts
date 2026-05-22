@@ -10,6 +10,16 @@ export const HandleSchema = z
   .string()
   .regex(/^[a-z0-9_-]{3,20}$/, "handle must be 3-20 chars, lowercase a-z, 0-9, _, -");
 
+/**
+ * Per-message accent color. Clients send their current accent with each POST;
+ * the server includes it in BROADCAST so other clients render the sender's
+ * handle in the sender's chosen color (not the receiver's local accent).
+ *
+ * Stripped from ghost broadcasts (same privacy contract as handle).
+ */
+export const AccentSchema = z.enum(["cyan", "amber", "magenta", "violet", "white"]);
+export type AccentName = z.infer<typeof AccentSchema>;
+
 const Timestamp = z.number().int().positive();
 const Version = z.literal(PROTOCOL_VERSION);
 
@@ -41,6 +51,8 @@ export const PostMessage = z.object({
   pubkey: Hex64,
   body: z.string().min(1).max(280),
   ghost: z.boolean(),
+  // Optional for forward-compat with older clients. New clients always set it.
+  accent: AccentSchema.optional(),
   t: Timestamp,
   signature: Hex128,
 });
@@ -85,6 +97,8 @@ export const RecentPostSchema = z.object({
   ghost: z.boolean(),
   body: z.string(),
   created_at: Timestamp,
+  // Omitted for ghost posts and for legacy posts (pre-v0.1.5).
+  accent: AccentSchema.optional(),
 });
 export type RecentPost = z.infer<typeof RecentPostSchema>;
 
@@ -167,6 +181,8 @@ export const BroadcastMessage = z.object({
   ghost: z.boolean(),
   body: z.string(),
   created_at: Timestamp,
+  // Same as RecentPost: omitted for ghost posts and pre-v0.1.5 legacy posts.
+  accent: AccentSchema.optional(),
 });
 export type BroadcastMessage = z.infer<typeof BroadcastMessage>;
 

@@ -8,16 +8,27 @@ const VOID_DIR = (): string =>
   process.env.VOID_HOME ?? join(homedir(), ".config", "void");
 const CONFIG_PATH = (): string => join(VOID_DIR(), "config.json");
 
+/**
+ * Theme controls how the void surface adapts to the terminal background.
+ *   "auto"  — detect via OSC 11 query at startup; fall back to dark.
+ *   "dark"  — force dark theme (white-on-black, light stars).
+ *   "light" — force light theme (dark-on-light, dark stars).
+ *
+ * Takes effect on next launch (the colors are baked into the renderables at
+ * scene initialization; live switching would require re-creating them).
+ */
 const ConfigSchema = z.object({
   accent_color: z.enum(
     Object.keys(ACCENT_PALETTE) as [keyof typeof ACCENT_PALETTE],
   ),
+  theme: z.enum(["auto", "dark", "light"]).default("auto"),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
 
 const DEFAULTS: Config = {
   accent_color: "cyan",
+  theme: "auto",
 };
 
 export async function loadConfig(): Promise<Config> {

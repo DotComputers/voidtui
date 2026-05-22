@@ -23,8 +23,21 @@ describe("config.ts", () => {
     const { loadConfig } = await import("../src/config.ts?fresh=" + Math.random());
     const cfg = await loadConfig();
     expect(cfg.accent_color).toBe("cyan");
+    expect(cfg.theme).toBe("auto");
     const raw = await Bun.file(join(tmp, "config.json")).text();
-    expect(JSON.parse(raw)).toEqual({ accent_color: "cyan" });
+    expect(JSON.parse(raw)).toEqual({ accent_color: "cyan", theme: "auto" });
+  });
+
+  test("loadConfig fills in default theme for legacy config.json missing the field", async () => {
+    await writeFile(
+      join(tmp, "config.json"),
+      JSON.stringify({ accent_color: "amber" }),
+      "utf8",
+    );
+    const { loadConfig } = await import("../src/config.ts?fresh=" + Math.random());
+    const cfg = await loadConfig();
+    expect(cfg.accent_color).toBe("amber");
+    expect(cfg.theme).toBe("auto");
   });
 
   test("loadConfig returns defaults on malformed file", async () => {

@@ -186,7 +186,7 @@ describe("runUpdate", () => {
     const result = await runUpdate({
       manifestUrl: "x",
       currentVersion: "0.1.99",
-      execPath: "/tmp/void-fake",
+      execPath: "/tmp/void",
       platform: "darwin-arm64",
       provideManifest: async () => ({
         version: "0.1.99",
@@ -205,7 +205,7 @@ describe("runUpdate", () => {
     const result = await runUpdate({
       manifestUrl: "x",
       currentVersion: "0.1.0",
-      execPath: "/tmp/void-fake",
+      execPath: "/tmp/void",
       platform: "linux-arm64",
       provideManifest: async () => ({
         version: "0.1.1",
@@ -269,11 +269,43 @@ describe("runUpdate", () => {
     }
   });
 
+  test("refuses to update when running from source (currentVersion is dev sentinel)", async () => {
+    // Critical regression guard. Without this check, the updater would clobber
+    // the user's bun binary at ~/.bun/bin/bun when running via `bun run` from
+    // source. See project-void-updater-source-run-guard memory.
+    const result = await runUpdate({
+      manifestUrl: "x",
+      currentVersion: "0.0.0-dev",
+      execPath: "/Users/sam/.bun/bin/bun", // not /void — exactly the scenario that bit us
+      platform: "darwin-arm64",
+      // Manifest provider should never be called when refused early.
+      provideManifest: async () => {
+        throw new Error("should not have fetched manifest");
+      },
+    });
+    expect(result.kind).toBe("refused");
+    if (result.kind === "refused") expect(result.reason).toBe("from-source");
+  });
+
+  test("refuses to update when execPath doesn't end with /void", async () => {
+    const result = await runUpdate({
+      manifestUrl: "x",
+      currentVersion: "0.1.0",
+      execPath: "/some/weird/path/not-void",
+      platform: "darwin-arm64",
+      provideManifest: async () => {
+        throw new Error("should not have fetched manifest");
+      },
+    });
+    expect(result.kind).toBe("refused");
+    if (result.kind === "refused") expect(result.reason).toBe("wrong-execpath");
+  });
+
   test("swallows network errors and returns 'failed' result", async () => {
     const result = await runUpdate({
       manifestUrl: "http://localhost:1/dead",
       currentVersion: "0.1.0",
-      execPath: "/tmp/void-fake",
+      execPath: "/tmp/void",
       platform: "darwin-arm64",
       provideManifest: async () => { throw new Error("network down"); },
     });

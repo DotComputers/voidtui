@@ -34,14 +34,8 @@ function rainbowHandle(handle: string): StyledText {
   return new StyledText(chunks);
 }
 
-/**
- * Color palette — modern terminal-native aesthetic.
- *
- * White on black, structure via borders rather than color. Accents reserved
- * for error states. The user's terminal font dictates glyph rendering; we
- * control colors, weight, and opacity.
- */
-export const COLORS = {
+// Dark theme — the original look; used when the terminal background is dark.
+const DARK_COLORS = {
   bg: RGBA.fromHex("#000000"),
   text: RGBA.fromHex("#f0f0f0"),
   textDim: RGBA.fromHex("#888888"),
@@ -50,7 +44,7 @@ export const COLORS = {
   star: RGBA.fromHex("#ffffff"),
   error: RGBA.fromHex("#ff6b6b"),
 
-  // Identity name-tag — fg fixed at black, bg now driven by accent module.
+  // Identity name-tag — fg fixed at black, bg driven by accent module.
   handleTagFg: RGBA.fromHex("#000000"),
   ghostTagFg: RGBA.fromHex("#e0e0e0"),
   ghostTagBg: RGBA.fromHex("#444444"),
@@ -62,6 +56,47 @@ export const COLORS = {
   commandOk: RGBA.fromHex("#34d399"),
   commandError: RGBA.fromHex("#ff6b6b"),
 };
+
+// Light theme — inverted for users with light terminal backgrounds.
+// Stars become dark gray (white stars are invisible on white); text becomes
+// near-black; handle-tag fg becomes white so the accent-colored bg stays
+// readable.
+const LIGHT_COLORS: typeof DARK_COLORS = {
+  bg: RGBA.fromHex("#ffffff"),
+  text: RGBA.fromHex("#0a0a0a"),
+  textDim: RGBA.fromHex("#666666"),
+  border: RGBA.fromHex("#cccccc"),
+  ghostBody: RGBA.fromHex("#666666"),
+  star: RGBA.fromHex("#aaaaaa"),
+  error: RGBA.fromHex("#dc2626"),
+
+  handleTagFg: RGBA.fromHex("#ffffff"),
+  ghostTagFg: RGBA.fromHex("#1a1a1a"),
+  ghostTagBg: RGBA.fromHex("#d0d0d0"),
+
+  postGhostMark: RGBA.fromHex("#666666"),
+
+  commandOk: RGBA.fromHex("#059669"),
+  commandError: RGBA.fromHex("#dc2626"),
+};
+
+/**
+ * Active palette. Imported as `COLORS` everywhere; its property *values* are
+ * swapped at startup by `applyTheme(theme)`. Defaults to dark (the original
+ * aesthetic, what users got pre-v0.1.5).
+ *
+ * Don't destructure COLORS at module load — only access properties at render
+ * time, otherwise consumers hold a stale reference past applyTheme().
+ */
+export const COLORS = { ...DARK_COLORS };
+
+/** Swap the active palette in place. Call once at startup, before scene.init(). */
+export function applyTheme(theme: "dark" | "light"): void {
+  const src = theme === "light" ? LIGHT_COLORS : DARK_COLORS;
+  for (const key of Object.keys(src) as Array<keyof typeof src>) {
+    (COLORS as Record<string, RGBA>)[key] = src[key];
+  }
+}
 
 export type SceneState = {
   handle: string | null;

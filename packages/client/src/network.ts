@@ -6,8 +6,10 @@ import {
   signMessage,
   toHex,
   generateKeypair,
+  type AccentName,
   type Keypair,
 } from "@void/shared";
+import { getAccent } from "./accent.ts";
 import {
   loadIdentity,
   newIdentity,
@@ -29,6 +31,8 @@ export type BroadcastEvent = {
   ghost: boolean;
   body: string;
   created_at: number;
+  /** Sender's accent at the time of the post. Omitted for ghosts and legacy posts. */
+  accent?: AccentName;
 };
 
 export type OwnPostEvent = BroadcastEvent;
@@ -67,7 +71,10 @@ export class NetworkClient {
 
   // Track posts we've sent so we can spawn them locally when POST_OK arrives
   // (server never broadcasts our own posts back to us).
-  private pendingPosts = new Map<string, { body: string; ghost: boolean }>();
+  private pendingPosts = new Map<
+    string,
+    { body: string; ghost: boolean; accent?: AccentName }
+  >();
 
   // First-run state: keypair + PoW cached across retries of tryRegister().
   private pendingKeypair: Keypair | null = null;
@@ -353,6 +360,10 @@ export class NetworkClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     const clientId = ulid();
+    // Snapshot the current accent at post time so other clients render this
+    // specific post in this specific color. Ghost posts omit accent (server
+    // would strip it anyway; we don't include it on the signed payload).
+    const currentAccent = input.ghost ? undefined : getAccent();
     const post = {
       v: PROTOCOL_VERSION as const,
       type: "POST" as const,
@@ -360,11 +371,16 @@ export class NetworkClient {
       pubkey: toHex(this.identity.keypair.publicKey),
       body: input.body,
       ghost: input.ghost,
+      ...(currentAccent ? { accent: currentAccent } : {}),
       t: Date.now(),
     };
     const signature = signMessage(this.identity.keypair.privateKey, post);
 
-    this.pendingPosts.set(clientId, { body: input.body, ghost: input.ghost });
+    this.pendingPosts.set(clientId, {
+      body: input.body,
+      ghost: input.ghost,
+      accent: currentAccent,
+    });
     this.ws.send(JSON.stringify({ ...post, signature }));
   }
 
@@ -470,6 +486,7 @@ export class NetworkClient {
             ghost: post.ghost,
             body: post.body,
             created_at: post.created_at,
+            accent: post.accent,
           });
         }
         break;
@@ -502,6 +519,7 @@ export class NetworkClient {
           ghost: msg.ghost,
           body: msg.body,
           created_at: msg.created_at,
+          accent: msg.accent,
         });
         break;
       }
@@ -515,6 +533,7 @@ export class NetworkClient {
             ghost: pending.ghost,
             body: pending.body,
             created_at: msg.created_at,
+            accent: pending.accent,
           });
         }
         break;
