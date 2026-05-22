@@ -87,6 +87,11 @@ jobs:
             -s -k "$KP" build.keychain
           rm cert.p12
 
+      - name: Checkout (for entitlements file)
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
       - name: Codesign
         run: |
           IDENTITY="$(security find-identity -v -p codesigning build.keychain \
@@ -95,7 +100,17 @@ jobs:
             echo "no Developer ID Application identity found" >&2
             exit 1
           fi
-          codesign --sign "$IDENTITY" --options runtime --timestamp --force ./void
+          # Entitlements required because:
+          #  - Bun-compiled binaries bundle native dylibs with different Team IDs
+          #    (disable-library-validation)
+          #  - Bun JIT-compiles JavaScript (allow-jit, allow-unsigned-executable-memory)
+          # See .github/entitlements.plist for the full rationale.
+          codesign --sign "$IDENTITY" \
+            --options runtime \
+            --timestamp \
+            --force \
+            --entitlements repo/.github/entitlements.plist \
+            ./void
 
       - name: Notarize
         env:
