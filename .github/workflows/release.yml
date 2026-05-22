@@ -175,10 +175,17 @@ jobs:
             dist/void-*.tar.gz dist/checksums.txt
 
       - name: Publish npm wrapper
-        working-directory: packages/npm-wrapper
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          # Copy npm-wrapper to a temp dir OUTSIDE the monorepo. From there
+          # npm can't see the parent workspace config (which uses bun's
+          # "workspace:*" protocol that npm doesn't understand). Avoids:
+          #   npm error EUNSUPPORTEDPROTOCOL Unsupported URL Type "workspace:"
+          TMPDIR_PUB="$(mktemp -d)"
+          rsync -a --exclude=node_modules packages/npm-wrapper/ "$TMPDIR_PUB/"
+          cd "$TMPDIR_PUB"
+
           npm version "${{ steps.ver.outputs.version }}" --no-git-tag-version --allow-same-version
           npm publish --access public
 
