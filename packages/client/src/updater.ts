@@ -10,7 +10,7 @@
  */
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rename, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { compareSemver } from "./version.ts";
 
 export type PlatformKey = "darwin-arm64" | "darwin-x64" | "linux-arm64" | "linux-x64";
@@ -90,6 +90,37 @@ async function safeUnlink(path: string): Promise<void> {
 }
 
 /**
+ * Extract a single file from a gzipped tar archive.
+ *
+ * Uses the system `tar` (present on macOS + Linux). `member` is the entry name
+ * inside the archive (e.g. "void"). `outPath` is where the extracted file
+ * should end up. Throws on tar failure.
+ */
+export async function extractTarGzMember(
+  archivePath: string,
+  member: string,
+  outPath: string,
+): Promise<void> {
+  const targetDir = dirname(outPath);
+  await mkdir(targetDir, { recursive: true });
+
+  const proc = Bun.spawn(["tar", "-xzf", archivePath, "-C", targetDir, member], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    const err = await new Response(proc.stderr).text();
+    throw new Error(`tar extract failed (${exitCode}): ${err.trim()}`);
+  }
+
+  const extractedPath = join(targetDir, member);
+  if (extractedPath !== outPath) {
+    await rename(extractedPath, outPath);
+  }
+}
+
+/**
  * Make `freshPath` executable, then atomically rename it over `targetPath`.
  *
  * On Unix this is safe even if `targetPath` is the currently-executing binary:
@@ -146,11 +177,18 @@ export async function runUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 
     const stagingDir = opts.stagingDir ?? join(opts.execPath, "..", ".void-updates");
     await mkdir(stagingDir, { recursive: true });
+    const archivePath = join(stagingDir, `void-${manifest.version}.tar.gz`);
     const freshPath = join(stagingDir, `void-${manifest.version}.new`);
 
     onProgress({ phase: "downloading", size: entry.size });
-    await downloadAndVerify(entry.url, entry.sha256, freshPath);
+    await downloadAndVerify(entry.url, entry.sha256, archivePath);
     onProgress({ phase: "verifying" });
+
+    // The release artifact is a `.tar.gz` containing a single file named `void`.
+    // We verified the archive's SHA against the manifest above; now extract.
+    await extractTarGzMember(archivePath, "void", freshPath);
+    // Best-effort cleanup of the archive (the extracted binary is what we keep).
+    await safeUnlink(archivePath);
 
     onProgress({ phase: "installing" });
     await atomicSwap(freshPath, opts.execPath);

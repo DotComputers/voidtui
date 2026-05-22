@@ -11,7 +11,7 @@
     },
     "packages/client": {
       "name": "@void/cli",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "bin": {
         "void": "./src/index.ts",
       },
@@ -31,7 +31,7 @@
     },
     "packages/server": {
       "name": "@void/server",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "dependencies": {
         "@void/shared": "workspace:*",
         "ulid": "^2.3.0",

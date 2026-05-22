@@ -7,10 +7,31 @@ import { chmod, stat } from "node:fs/promises";
 import {
   atomicSwap,
   downloadAndVerify,
+  extractTarGzMember,
   fetchManifest,
   runUpdate,
   type Manifest,
 } from "../src/updater.ts";
+
+/**
+ * Helper for tests that need an actual tar.gz served from a mock HTTP server.
+ * Creates a tar.gz containing one file named `void` (or another given name)
+ * holding the given content. Returns the tarball bytes + its SHA256.
+ */
+async function makeTarGz(content: string, workdir: string, memberName = "void"): Promise<{
+  bytes: Uint8Array;
+  sha256: string;
+}> {
+  const srcDir = await mkdtemp(join(workdir, "src-"));
+  await Bun.write(join(srcDir, memberName), content);
+  const tarPath = join(workdir, `${memberName}-${Math.random().toString(36).slice(2)}.tar.gz`);
+  const proc = Bun.spawn(["tar", "-czf", tarPath, "-C", srcDir, memberName]);
+  const code = await proc.exited;
+  if (code !== 0) throw new Error("tar pack failed in test setup");
+  const bytes = new Uint8Array(await Bun.file(tarPath).arrayBuffer());
+  const sha = createHash("sha256").update(bytes).digest("hex");
+  return { bytes, sha256: sha };
+}
 
 let server: ReturnType<typeof Bun.serve> | null = null;
 let baseUrl = "";
@@ -199,18 +220,18 @@ describe("runUpdate", () => {
     expect(result.kind).toBe("unsupported-platform");
   });
 
-  test("end-to-end: downloads + swaps when manifest is newer", async () => {
+  test("end-to-end: downloads tar.gz, extracts void, swaps when manifest is newer", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "void-runupdate-"));
     try {
       const targetPath = join(workdir, "void");
       await Bun.write(targetPath, "OLD-VOID");
 
       const payload = "NEW-VOID";
-      const payloadSha = createHash("sha256").update(payload).digest("hex");
+      const { bytes: tarBytes, sha256: tarSha } = await makeTarGz(payload, workdir);
 
       const binServer = Bun.serve({
         port: 0,
-        fetch: () => new Response(payload, { status: 200 }),
+        fetch: () => new Response(tarBytes, { status: 200 }),
       });
       try {
         const result = await runUpdate({
@@ -226,8 +247,8 @@ describe("runUpdate", () => {
             platforms: {
               "darwin-arm64": {
                 url: `http://localhost:${binServer.port}/bin`,
-                sha256: payloadSha,
-                size: payload.length,
+                sha256: tarSha,
+                size: tarBytes.byteLength,
               },
             },
             notes_url: "x",
@@ -236,6 +257,8 @@ describe("runUpdate", () => {
         expect(result.kind).toBe("installed");
         if (result.kind === "installed") expect(result.newVersion).toBe("0.1.1");
 
+        // After extraction + swap, the binary at execPath should be the file
+        // that was *inside* the tarball.
         const after = await Bun.file(targetPath).text();
         expect(after).toBe("NEW-VOID");
       } finally {
@@ -260,7 +283,6 @@ describe("runUpdate", () => {
 
 describe("install-path independence (regression)", () => {
   const PAYLOAD = "PATH-INDEPENDENT";
-  const PAYLOAD_SHA = createHash("sha256").update(PAYLOAD).digest("hex");
 
   async function runWithExecPath(execPathSuffix: string): Promise<void> {
     const workdir = await mkdtemp(join(tmpdir(), "void-pathind-"));
@@ -270,9 +292,11 @@ describe("install-path independence (regression)", () => {
       const targetPath = join(subdir, "void");
       await Bun.write(targetPath, "OLD");
 
+      const { bytes: tarBytes, sha256: tarSha } = await makeTarGz(PAYLOAD, workdir);
+
       const binServer = Bun.serve({
         port: 0,
-        fetch: () => new Response(PAYLOAD, { status: 200 }),
+        fetch: () => new Response(tarBytes, { status: 200 }),
       });
       try {
         const result = await runUpdate({
@@ -287,8 +311,8 @@ describe("install-path independence (regression)", () => {
             platforms: {
               "darwin-arm64": {
                 url: `http://localhost:${binServer.port}/`,
-                sha256: PAYLOAD_SHA,
-                size: PAYLOAD.length,
+                sha256: tarSha,
+                size: tarBytes.byteLength,
               },
             },
             notes_url: "x",
