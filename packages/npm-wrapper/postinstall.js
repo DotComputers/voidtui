@@ -11,6 +11,14 @@ const crypto = require("node:crypto");
 const https = require("node:https");
 const { execFileSync } = require("node:child_process");
 
+// Skip when this package is being installed as a monorepo workspace member
+// (e.g. `bun install` in the void2 dev tree or in CI). The postinstall is
+// only meant to run when an end user does `npm i -g thevoid`.
+if (__dirname.includes(path.sep + "packages" + path.sep + "npm-wrapper")) {
+  console.log("[thevoid] workspace context detected, skipping postinstall");
+  process.exit(0);
+}
+
 const MANIFEST_URL = process.env.VOID_MANIFEST_URL || "https://void-relay.com/release/latest.json";
 const BIN_DIR = path.join(__dirname, "bin");
 const BIN_PATH = path.join(BIN_DIR, "void");
