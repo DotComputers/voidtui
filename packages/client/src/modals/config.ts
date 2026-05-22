@@ -4,9 +4,8 @@ import { ACCENT_NAMES, ACCENT_PALETTE, type AccentName } from "../colors.ts";
 import { getAccent, saveAccent, setAccent } from "../accent.ts";
 import { identityPath } from "../identity.ts";
 import { configPath } from "../config.ts";
+import { CLIENT_VERSION } from "../version.ts";
 import type { Modal, ModalContext, ModalKeyEvent } from "./index.ts";
-
-const VERSION = "0.1.0";
 
 export class ConfigModal implements Modal {
   private accentSavedOriginal: AccentName = "cyan";
@@ -54,7 +53,7 @@ export class ConfigModal implements Modal {
     }));
     inner.add(new TextRenderable(ctx.renderer, {
       id: "config-version",
-      content: `version:       v${VERSION}`,
+      content: `version:       v${CLIENT_VERSION}`,
       fg: COLORS.text,
     }));
 

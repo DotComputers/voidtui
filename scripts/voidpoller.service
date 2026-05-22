@@ -1,0 +1,19 @@
+[Unit]
+Description=The Void — release-poller (regenerates manifest from GitHub Releases)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sam
+WorkingDirectory=/home/sam/voidtui
+Environment=PATH=/home/sam/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=VOID_GH_REPO=DotComputers/voidtui
+Environment=VOID_RELEASE_DIR=/home/sam/void-data/release
+Environment=VOID_POLL_INTERVAL=90000
+ExecStart=/home/sam/.bun/bin/bun run scripts/poll-releases.ts
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

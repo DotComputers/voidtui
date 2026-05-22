@@ -1,36 +1,14 @@
-# Dependencies
 node_modules/
-
-# Bun binary lockfile (we use the text bun.lock)
 bun.lockb
-
-# macOS metadata
 .DS_Store
-
-# Environment / secrets
 .env
 .env.local
-.env.*.local
-
-# Build output
 dist/
 build/
-
-# Logs
 *.log
+.void-dev/
 
 # SQLite runtime state (server.db and its WAL/SHM sidecars)
 *.db
 *.db-shm
 *.db-wal
-
-# Dev-scoped VOID_HOME convention
-.void-dev/
-
-# Defensive: agent-workflow / internal docs that live in the private dev workspace
-# and should never enter the public repo even if mistakenly copied here.
-STATUS.md
-docs/superpowers/
-DESIGN.md
-UX.md
-PROTOCOL.md

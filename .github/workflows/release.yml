@@ -1,0 +1,272 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}-${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          - { os: macos-latest,  platform: darwin, arch: arm64, target: bun-darwin-arm64 }
+          - { os: macos-latest,  platform: darwin, arch: x64,   target: bun-darwin-x64 }
+          - { os: ubuntu-latest, platform: linux,  arch: arm64, target: bun-linux-arm64 }
+          - { os: ubuntu-latest, platform: linux,  arch: x64,   target: bun-linux-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Determine version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binary
+        run: |
+          bun build packages/client/src/index.ts \
+            --compile \
+            --target=${{ matrix.target }} \
+            --define VOID_CLIENT_VERSION='"'"${{ steps.ver.outputs.version }}"'"' \
+            --outfile void
+
+      - name: Upload unsigned artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: void-${{ matrix.platform }}-${{ matrix.arch }}-unsigned
+          path: void
+          retention-days: 1
+
+  notarize:
+    name: notarize darwin-${{ matrix.arch }}
+    needs: build
+    strategy:
+      matrix:
+        arch: [arm64, x64]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: void-darwin-${{ matrix.arch }}-unsigned
+          path: .
+
+      - name: Make binary executable
+        run: chmod +x ./void
+
+      - name: Import Developer ID certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          CERT_PASSWORD:   ${{ secrets.APPLE_CERT_PASSWORD }}
+          KP:              ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$CERT_P12_BASE64" | base64 --decode > cert.p12
+          security create-keychain -p "$KP" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KP" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security import cert.p12 -k build.keychain -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KP" build.keychain
+          rm cert.p12
+
+      - name: Codesign
+        run: |
+          IDENTITY="$(security find-identity -v -p codesigning build.keychain \
+            | grep 'Developer ID Application' | head -1 | awk -F'"' '{print $2}')"
+          if [ -z "$IDENTITY" ]; then
+            echo "no Developer ID Application identity found" >&2
+            exit 1
+          fi
+          codesign --sign "$IDENTITY" --options runtime --timestamp --force ./void
+
+      - name: Notarize
+        env:
+          APPLE_ID:               ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID:          ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD:  ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          zip -q void.zip void
+          xcrun notarytool submit void.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD" \
+            --wait
+          rm void.zip
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: void-darwin-${{ matrix.arch }}-signed
+          path: void
+          retention-days: 1
+
+  publish:
+    name: publish
+    needs: [build, notarize]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.3.14
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Determine version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package tarballs
+        run: |
+          mkdir -p dist
+          for plat in darwin-arm64 darwin-x64; do
+            cp "artifacts/void-${plat}-signed/void" "./void"
+            chmod +x ./void
+            tar -czf "dist/void-${plat}.tar.gz" void
+            rm ./void
+          done
+          for plat in linux-arm64 linux-x64; do
+            cp "artifacts/void-${plat}-unsigned/void" "./void"
+            chmod +x ./void
+            tar -czf "dist/void-${plat}.tar.gz" void
+            rm ./void
+          done
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum void-*.tar.gz > checksums.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.ver.outputs.version }}" \
+            --title "v${{ steps.ver.outputs.version }}" \
+            --notes "Auto-generated release. See commit history for details." \
+            dist/void-*.tar.gz dist/checksums.txt
+
+      - name: Publish npm wrapper
+        working-directory: packages/npm-wrapper
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm version "${{ steps.ver.outputs.version }}" --no-git-tag-version --allow-same-version
+          npm publish --access public
+
+      - name: Compute manifest
+        run: |
+          mkdir -p release-out
+          DARWIN_ARM64_SHA=$(grep void-darwin-arm64 dist/checksums.txt | awk '{print $1}')
+          DARWIN_X64_SHA=$(grep void-darwin-x64 dist/checksums.txt | awk '{print $1}')
+          LINUX_ARM64_SHA=$(grep void-linux-arm64 dist/checksums.txt | awk '{print $1}')
+          LINUX_X64_SHA=$(grep void-linux-x64 dist/checksums.txt | awk '{print $1}')
+          DARWIN_ARM64_SIZE=$(stat -c%s dist/void-darwin-arm64.tar.gz)
+          DARWIN_X64_SIZE=$(stat -c%s dist/void-darwin-x64.tar.gz)
+          LINUX_ARM64_SIZE=$(stat -c%s dist/void-linux-arm64.tar.gz)
+          LINUX_X64_SIZE=$(stat -c%s dist/void-linux-x64.tar.gz)
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${{ steps.ver.outputs.version }}"
+          bun scripts/build-manifest.ts \
+            --version "${{ steps.ver.outputs.version }}" \
+            --released-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${{ steps.ver.outputs.version }}" \
+            --platform darwin-arm64 --url "$BASE_URL/void-darwin-arm64.tar.gz" --sha "$DARWIN_ARM64_SHA" --size "$DARWIN_ARM64_SIZE" \
+            --platform darwin-x64   --url "$BASE_URL/void-darwin-x64.tar.gz"   --sha "$DARWIN_X64_SHA"   --size "$DARWIN_X64_SIZE" \
+            --platform linux-arm64  --url "$BASE_URL/void-linux-arm64.tar.gz"  --sha "$LINUX_ARM64_SHA"  --size "$LINUX_ARM64_SIZE" \
+            --platform linux-x64    --url "$BASE_URL/void-linux-x64.tar.gz"    --sha "$LINUX_X64_SHA"    --size "$LINUX_X64_SIZE" \
+            --out-json release-out/latest.json \
+            --out-sh   release-out/latest.sh
+
+      - name: Upload manifest artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest
+          path: release-out
+
+      - name: Open Homebrew tap PR
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          DARWIN_ARM64_SHA=$(grep void-darwin-arm64 dist/checksums.txt | awk '{print $1}')
+          DARWIN_X64_SHA=$(grep void-darwin-x64 dist/checksums.txt | awk '{print $1}')
+          LINUX_ARM64_SHA=$(grep void-linux-arm64 dist/checksums.txt | awk '{print $1}')
+          LINUX_X64_SHA=$(grep void-linux-x64 dist/checksums.txt | awk '{print $1}')
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/DotComputers/homebrew-void.git" tap
+          cd tap
+
+          mkdir -p Formula
+          cat > Formula/void.rb <<EOF
+          class Void < Formula
+            desc "Ham radio for the internet — terminal-native ephemeral social"
+            homepage "https://void-relay.com"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url    "${BASE_URL}/void-darwin-arm64.tar.gz"
+                sha256 "${DARWIN_ARM64_SHA}"
+              end
+              on_intel do
+                url    "${BASE_URL}/void-darwin-x64.tar.gz"
+                sha256 "${DARWIN_X64_SHA}"
+              end
+            end
+            on_linux do
+              on_arm do
+                url    "${BASE_URL}/void-linux-arm64.tar.gz"
+                sha256 "${LINUX_ARM64_SHA}"
+              end
+              on_intel do
+                url    "${BASE_URL}/void-linux-x64.tar.gz"
+                sha256 "${LINUX_X64_SHA}"
+              end
+            end
+
+            def install
+              bin.install "void"
+            end
+          end
+          EOF
+
+          BRANCH="bump-v${VERSION}"
+          git config user.name  "void-release-bot"
+          git config user.email "void-release-bot@noreply.github.com"
+          git checkout -b "${BRANCH}"
+          git add Formula/void.rb
+          git commit -m "bump to v${VERSION}"
+          git push -u origin "${BRANCH}"
+          gh pr create \
+            --title "bump to v${VERSION}" \
+            --body "Automated bump from release.yml." \
+            --base main
+
+  # NOTE: manifest is no longer pushed from CI. The Jetson polls GitHub Releases
+  # every 90s via scripts/poll-releases.ts (run as voidpoller.service) and
+  # regenerates the manifest locally when a new release tag appears.

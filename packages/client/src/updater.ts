@@ -1,0 +1,179 @@
+/**
+ * Auto-update flow.
+ *
+ * On startup we fetch the latest manifest from the Jetson, and if it points to
+ * a newer version than the embedded CLIENT_VERSION, we silently download +
+ * verify + atomic-rename the new binary over our own location. The current
+ * process keeps running on the old inode; next launch picks up the new file.
+ *
+ * All failure paths are non-fatal: a failed update never breaks a running void.
+ */
+import { createHash } from "node:crypto";
+import { chmod, mkdir, rename, unlink } from "node:fs/promises";
+import { join } from "node:path";
+import { compareSemver } from "./version.ts";
+
+export type PlatformKey = "darwin-arm64" | "darwin-x64" | "linux-arm64" | "linux-x64";
+
+export type Manifest = {
+  version: string;
+  released_at: string;
+  min_protocol: number;
+  platforms: Partial<Record<PlatformKey, { url: string; sha256: string; size: number }>>;
+  notes_url: string;
+};
+
+const FETCH_TIMEOUT_MS = 3_000;
+
+/** Fetch + parse the manifest. Throws on network error, non-200, malformed JSON, or missing fields. */
+export async function fetchManifest(url: string): Promise<Manifest> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: ac.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) throw new Error(`manifest fetch failed: ${res.status}`);
+  const text = await res.text();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new Error("manifest is not valid JSON");
+  }
+  if (typeof raw !== "object" || raw === null) throw new Error("manifest is not an object");
+  const r = raw as Record<string, unknown>;
+  if (typeof r.version !== "string") throw new Error("manifest missing version");
+  if (typeof r.released_at !== "string") throw new Error("manifest missing released_at");
+  if (typeof r.platforms !== "object" || r.platforms === null) throw new Error("manifest missing platforms");
+  return r as unknown as Manifest;
+}
+
+/** Download URL to `outPath`, verify SHA256 hex. Removes file and throws on mismatch. */
+export async function downloadAndVerify(url: string, expectedSha256Hex: string, outPath: string): Promise<void> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`download failed: ${res.status}`);
+  if (!res.body) throw new Error("download had no body");
+
+  const hash = createHash("sha256");
+  const writer = Bun.file(outPath).writer();
+  try {
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      hash.update(value);
+      writer.write(value);
+    }
+    await writer.end();
+  } catch (e) {
+    await writer.end();
+    await safeUnlink(outPath);
+    throw e;
+  }
+
+  const actual = hash.digest("hex");
+  if (actual !== expectedSha256Hex) {
+    await safeUnlink(outPath);
+    throw new Error(`sha256 mismatch: expected ${expectedSha256Hex}, got ${actual}`);
+  }
+}
+
+async function safeUnlink(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Make `freshPath` executable, then atomically rename it over `targetPath`.
+ *
+ * On Unix this is safe even if `targetPath` is the currently-executing binary:
+ * the kernel keeps the running process's inode alive after the rename.
+ * Next process launch from that path picks up the new file.
+ *
+ * `freshPath` and `targetPath` must be on the same filesystem (typical: both
+ * inside the user's home dir).
+ */
+export async function atomicSwap(freshPath: string, targetPath: string): Promise<void> {
+  await chmod(freshPath, 0o755);
+  await rename(freshPath, targetPath);
+}
+
+export type UpdateResult =
+  | { kind: "already-current" }
+  | { kind: "unsupported-platform" }
+  | { kind: "installed"; newVersion: string }
+  | { kind: "failed"; reason: string };
+
+export type UpdateProgress =
+  | { phase: "fetching-manifest" }
+  | { phase: "downloading"; size: number }
+  | { phase: "verifying" }
+  | { phase: "installing" }
+  | { phase: "done"; newVersion: string }
+  | { phase: "failed"; reason: string };
+
+export type UpdateOptions = {
+  manifestUrl: string;
+  currentVersion: string;
+  execPath: string;
+  platform: PlatformKey;
+  /** Override staging directory (defaults to `<dirname execPath>/.void-updates`). */
+  stagingDir?: string;
+  /** Inject a custom manifest provider (for tests). */
+  provideManifest?: (url: string) => Promise<Manifest>;
+  /** Progress callback for the UI (optional). */
+  onProgress?: (p: UpdateProgress) => void;
+};
+
+export async function runUpdate(opts: UpdateOptions): Promise<UpdateResult> {
+  const onProgress = opts.onProgress ?? (() => {});
+  const provideManifest = opts.provideManifest ?? fetchManifest;
+  try {
+    onProgress({ phase: "fetching-manifest" });
+    const manifest = await provideManifest(opts.manifestUrl);
+
+    if (compareSemver(manifest.version, opts.currentVersion) <= 0) {
+      return { kind: "already-current" };
+    }
+    const entry = manifest.platforms[opts.platform];
+    if (!entry) return { kind: "unsupported-platform" };
+
+    const stagingDir = opts.stagingDir ?? join(opts.execPath, "..", ".void-updates");
+    await mkdir(stagingDir, { recursive: true });
+    const freshPath = join(stagingDir, `void-${manifest.version}.new`);
+
+    onProgress({ phase: "downloading", size: entry.size });
+    await downloadAndVerify(entry.url, entry.sha256, freshPath);
+    onProgress({ phase: "verifying" });
+
+    onProgress({ phase: "installing" });
+    await atomicSwap(freshPath, opts.execPath);
+
+    onProgress({ phase: "done", newVersion: manifest.version });
+    return { kind: "installed", newVersion: manifest.version };
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    onProgress({ phase: "failed", reason });
+    return { kind: "failed", reason };
+  }
+}
+
+/**
+ * Compute the platform key for the running process, or null if unsupported.
+ * Maps Bun's `process.platform` + `process.arch` to our manifest keys.
+ */
+export function detectPlatform(): PlatformKey | null {
+  const p = process.platform;
+  const a = process.arch;
+  if (p === "darwin" && a === "arm64") return "darwin-arm64";
+  if (p === "darwin" && a === "x64") return "darwin-x64";
+  if (p === "linux" && a === "arm64") return "linux-arm64";
+  if (p === "linux" && a === "x64") return "linux-x64";
+  return null;
+}

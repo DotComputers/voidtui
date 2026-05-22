@@ -6,8 +6,8 @@ import {
 } from "../src/commands.ts";
 
 describe("COMMAND_NAMES", () => {
-  test("v0.1 commands present, /update absent", () => {
-    const expected: CommandName[] = ["help", "config", "donate", "merch", "quit"];
+  test("v0.1 commands present including /update", () => {
+    const expected: CommandName[] = ["help", "config", "donate", "merch", "quit", "update"];
     expect(COMMAND_NAMES).toEqual(expected);
   });
 });
@@ -35,6 +35,11 @@ describe("classifyInput", () => {
     expect(classifyInput("/donate")).toEqual({ kind: "valid", command: "donate" });
     expect(classifyInput("/merch")).toEqual({ kind: "valid", command: "merch" });
     expect(classifyInput("/quit")).toEqual({ kind: "valid", command: "quit" });
+    expect(classifyInput("/update")).toEqual({ kind: "valid", command: "update" });
+  });
+
+  test("/up is incomplete", () => {
+    expect(classifyInput("/up")).toEqual({ kind: "incomplete" });
   });
 
   test("non-prefix + non-match is 'invalid'", () => {

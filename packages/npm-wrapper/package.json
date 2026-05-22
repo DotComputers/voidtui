@@ -1,0 +1,27 @@
+{
+  "name": "thevoid",
+  "version": "0.0.0",
+  "description": "Ham radio for the internet — terminal-native ephemeral social platform.",
+  "bin": {
+    "void": "./bin/void"
+  },
+  "scripts": {
+    "postinstall": "node postinstall.js"
+  },
+  "homepage": "https://void-relay.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DotComputers/voidtui.git"
+  },
+  "license": "MIT",
+  "os": ["darwin", "linux"],
+  "cpu": ["x64", "arm64"],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "postinstall.js",
+    "bin",
+    "README.md"
+  ]
+}

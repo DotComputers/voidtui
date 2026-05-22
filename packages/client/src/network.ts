@@ -15,8 +15,8 @@ import {
   suggestHandle,
   type Identity,
 } from "./identity.ts";
+import { CLIENT_VERSION } from "./version.ts";
 
-const CLIENT_VERSION = "0.1.0";
 const POW_DIFFICULTY = 18;
 const PING_INTERVAL_MS = 30_000;
 const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];

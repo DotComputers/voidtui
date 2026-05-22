@@ -1,4 +1,4 @@
-export const COMMAND_NAMES = ["help", "config", "donate", "merch", "quit"] as const;
+export const COMMAND_NAMES = ["help", "config", "donate", "merch", "quit", "update"] as const;
 export type CommandName = (typeof COMMAND_NAMES)[number];
 
 export type Classification =

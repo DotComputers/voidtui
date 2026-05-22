@@ -24,9 +24,11 @@ import {
   registerIdentity,
   tryUpdateHandle,
 } from "./store.ts";
+import { handleReleaseRequest } from "./release-routes.ts";
 
 const SERVER_VERSION = "0.1.0";
 const PORT = Number(process.env.PORT ?? 8787);
+const RELEASE_DIR = process.env.VOID_RELEASE_DIR ?? "./release";
 const POW_DIFFICULTY = 18;
 const POST_RETENTION_MS = 24 * 60 * 60 * 1000;
 const RECENT_WINDOW_MS = 90 * 1000;
@@ -469,7 +471,10 @@ function handleMessage(ws: Sock, raw: string | Buffer): void {
 function startServer(): void {
   const server = Bun.serve<WSData, never>({
     port: PORT,
-    fetch(req, server) {
+    async fetch(req, server) {
+      const releaseResponse = await handleReleaseRequest(req, RELEASE_DIR);
+      if (releaseResponse) return releaseResponse;
+
       const upgraded = server.upgrade(req, {
         data: {
           pubkeyHex: null,

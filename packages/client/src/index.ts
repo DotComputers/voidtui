@@ -11,8 +11,12 @@ import { HelpModal } from "./modals/help.ts";
 import { ConfigModal } from "./modals/config.ts";
 import { LaunchBrowserModal } from "./modals/launch-browser.ts";
 import { DONATE_URL, MERCH_URL } from "./constants.ts";
+import { runUpdate, detectPlatform } from "./updater.ts";
+import { CLIENT_VERSION } from "./version.ts";
+import { UpdateModal, ProtocolMismatchModal } from "./modals/update.ts";
 
 const SERVER_URL = process.env.VOID_SERVER ?? "wss://api.void-relay.com";
+const MANIFEST_URL = process.env.VOID_MANIFEST_URL ?? "https://void-relay.com/release/latest.json";
 const HANDLE_REGEX = /^[a-z0-9_-]{3,20}$/;
 
 async function main(): Promise<void> {
@@ -64,12 +68,28 @@ async function main(): Promise<void> {
   });
 
   network.on("rejected", (reason, message) => {
-    // For v0.1, just log to a TODO surface. UX-wise we'd render a centered
-    // message and pause input — deferred.
+    if (reason === "protocol_mismatch") {
+      modals.mount(new ProtocolMismatchModal());
+      return;
+    }
+    // For other rejections (e.g. banned, server-full) just log; the steady-state
+    // reconnect loop will keep retrying.
     console.error(`[void] connect rejected: ${reason} — ${message}`);
   });
 
   await network.start();
+
+  // Background auto-update: fire-and-forget. The current session keeps running
+  // on the old binary; next launch picks up any update we install.
+  const platform = detectPlatform();
+  if (platform) {
+    void runUpdate({
+      manifestUrl: MANIFEST_URL,
+      currentVersion: CLIENT_VERSION,
+      execPath: process.execPath,
+      platform,
+    });
+  }
 
   // Input → Network
   const input = new InputHandler(
@@ -97,6 +117,9 @@ async function main(): Promise<void> {
             url: MERCH_URL,
             headline: "wear the void",
           }));
+          break;
+        case "update":
+          modals.mount(new UpdateModal());
           break;
         case "quit":
           void gracefulExit(network, scene, 0);
