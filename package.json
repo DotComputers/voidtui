@@ -1,0 +1,17 @@
+{
+  "name": "void",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "server": "bun run --cwd packages/server src/index.ts",
+    "client": "bun run --cwd packages/client src/index.ts",
+    "typecheck": "bun run --cwd packages/shared tsc --noEmit && bun run --cwd packages/server tsc --noEmit && bun run --cwd packages/client tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}

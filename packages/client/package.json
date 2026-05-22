@@ -1,0 +1,18 @@
+{
+  "name": "@void/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "bin": {
+    "void": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.2.15",
+    "@void/shared": "workspace:*",
+    "ulid": "^2.3.0",
+    "zod": "^3.23.8"
+  }
+}
