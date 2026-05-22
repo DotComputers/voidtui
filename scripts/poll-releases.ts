@@ -31,9 +31,10 @@ if (!REPO) {
   process.exit(1);
 }
 
-const ASSET_NAMES: Record<Platform, string> = {
+// v0.1: darwin-x64 omitted. Missing platforms are skipped silently in the loop
+// below — the schema permits a partial manifest.
+const ASSET_NAMES: Partial<Record<Platform, string>> = {
   "darwin-arm64": "void-darwin-arm64.tar.gz",
-  "darwin-x64":   "void-darwin-x64.tar.gz",
   "linux-arm64":  "void-linux-arm64.tar.gz",
   "linux-x64":    "void-linux-x64.tar.gz",
 };
@@ -89,7 +90,7 @@ function buildJson(args: {
   version: string;
   releasedAt: string;
   notesUrl: string;
-  platforms: Record<Platform, PlatformEntry>;
+  platforms: Partial<Record<Platform, PlatformEntry>>;
 }): string {
   return JSON.stringify(
     {
@@ -106,7 +107,7 @@ function buildJson(args: {
 
 function buildSh(args: {
   version: string;
-  platforms: Record<Platform, PlatformEntry>;
+  platforms: Partial<Record<Platform, PlatformEntry>>;
 }): string {
   const lines: string[] = [`VOID_VERSION="${args.version}"`];
   for (const [key, entry] of Object.entries(args.platforms)) {
@@ -141,10 +142,14 @@ async function refreshManifest(): Promise<void> {
     const asset = release.assets.find((a) => a.name === filename);
     const sha = checksums[filename];
     if (!asset || !sha) {
-      console.warn(`release ${release.tag} missing ${filename} or its checksum — skipping`);
-      return;
+      console.warn(`release ${release.tag} missing ${filename} or its checksum — skipping this platform`);
+      continue;
     }
     platforms[plat] = { url: asset.url, sha256: sha, size: asset.size };
+  }
+  if (Object.keys(platforms).length === 0) {
+    console.warn(`release ${release.tag} had no recognized platforms — skipping manifest write`);
+    return;
   }
 
   await mkdir(RELEASE_DIR, { recursive: true });
@@ -152,11 +157,11 @@ async function refreshManifest(): Promise<void> {
     version: release.version,
     releasedAt: release.publishedAt,
     notesUrl: release.htmlUrl,
-    platforms: platforms as Record<Platform, PlatformEntry>,
+    platforms,
   });
   const sh = buildSh({
     version: release.version,
-    platforms: platforms as Record<Platform, PlatformEntry>,
+    platforms,
   });
   await writeAtomically(join(RELEASE_DIR, "latest.json"), json);
   await writeAtomically(join(RELEASE_DIR, "latest.sh"), sh);

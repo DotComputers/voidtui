@@ -24,7 +24,7 @@ function parseArgs(argv: string[]): {
   version: string;
   releasedAt: string;
   notesUrl: string;
-  platforms: Record<Platform, PlatformEntry>;
+  platforms: Partial<Record<Platform, PlatformEntry>>;
   outJson: string;
   outSh: string;
 } {
@@ -73,7 +73,8 @@ function parseArgs(argv: string[]): {
   }
   flushPlatform();
 
-  const required: Platform[] = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+  // v0.1: darwin-x64 omitted. Schema still accepts it; just not required.
+  const required: Platform[] = ["darwin-arm64", "linux-arm64", "linux-x64"];
   for (const p of required) {
     if (!platforms[p]) throw new Error(`missing --platform ${p}`);
   }
@@ -85,7 +86,7 @@ function parseArgs(argv: string[]): {
     version,
     releasedAt,
     notesUrl,
-    platforms: platforms as Record<Platform, PlatformEntry>,
+    platforms: platforms as Partial<Record<Platform, PlatformEntry>>,
     outJson,
     outSh,
   };
