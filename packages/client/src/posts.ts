@@ -8,6 +8,7 @@ import {
 import type { AccentName } from "@void/shared";
 import { COLORS } from "./scene.ts";
 import { getAccentHex } from "./accent.ts";
+import { lerpRgba } from "./fade.ts";
 import { ACCENT_PALETTE } from "./colors.ts";
 
 /**
@@ -118,7 +119,6 @@ export class PostsLayer {
       top,
       width,
       height,
-      opacity: 0,
       zIndex: 10,
     });
     this.surface.add(container);
@@ -131,23 +131,32 @@ export class PostsLayer {
       : input.accent
         ? RGBA.fromHex(ACCENT_PALETTE[input.accent])
         : RGBA.fromHex(getAccentHex());
-    container.add(
-      new TextRenderable(this.renderer, {
-        id: `${id}-handle`,
-        content: handleLine,
-        fg: handleColor,
-      }),
-    );
+
+    // Each child starts at COLORS.bg — invisible against the theme background.
+    // The fade animation lerps fg toward realColor (fade-in) and back (fade-out).
+    // We don't use opentui's container.opacity because that composites against
+    // opentui's internal transparent-black bg, fading to black even on light
+    // terminals. Lerping fg directly tracks the active theme correctly and
+    // keeps the renderer bg transparent (preserves terminal translucency).
+    const fadeTargets: Array<{ renderable: TextRenderable; realColor: RGBA }> = [];
+
+    const handleRenderable = new TextRenderable(this.renderer, {
+      id: `${id}-handle`,
+      content: handleLine,
+      fg: COLORS.bg,
+    });
+    container.add(handleRenderable);
+    fadeTargets.push({ renderable: handleRenderable, realColor: handleColor });
 
     const bodyColor = input.ghost ? COLORS.ghostBody : COLORS.text;
     for (let i = 0; i < lines.length; i++) {
-      container.add(
-        new TextRenderable(this.renderer, {
-          id: `${id}-body-${i}`,
-          content: lines[i]!,
-          fg: bodyColor,
-        }),
-      );
+      const bodyRenderable = new TextRenderable(this.renderer, {
+        id: `${id}-body-${i}`,
+        content: lines[i]!,
+        fg: COLORS.bg,
+      });
+      container.add(bodyRenderable);
+      fadeTargets.push({ renderable: bodyRenderable, realColor: bodyColor });
     }
 
     const lifetime = calculateLifetime(input.body);
@@ -163,18 +172,35 @@ export class PostsLayer {
       onComplete: () => this.removePost(id),
     });
     // Match the webview's CSS keyframes: linear interpolation, fade in
-    // then hold then fade out.
-    tl.add(container, {
-      duration: fadeIn,
-      ease: "linear",
-      opacity: 1,
-    });
+    // then hold then fade out. Each phase animates a throwaway proxy
+    // {_t: 0→1}; onUpdate reads animation.progress and applies lerpRgba to
+    // each child's fg.
     tl.add(
-      container,
+      { _t: 0 },
+      {
+        duration: fadeIn,
+        ease: "linear",
+        _t: 1,
+        onUpdate: (anim) => {
+          const t = anim.progress;
+          for (const { renderable, realColor } of fadeTargets) {
+            renderable.fg = lerpRgba(COLORS.bg, realColor, t);
+          }
+        },
+      },
+    );
+    tl.add(
+      { _t: 0 },
       {
         duration: fadeOut,
         ease: "linear",
-        opacity: 0,
+        _t: 1,
+        onUpdate: (anim) => {
+          const t = anim.progress;
+          for (const { renderable, realColor } of fadeTargets) {
+            renderable.fg = lerpRgba(realColor, COLORS.bg, t);
+          }
+        },
       },
       fadeIn + hold,
     );

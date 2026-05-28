@@ -5,6 +5,7 @@ import {
   type CliRenderer,
 } from "@opentui/core";
 import { COLORS } from "./scene.ts";
+import { lerpRgba } from "./fade.ts";
 
 /**
  * Persistent star field with per-star aging.
@@ -14,10 +15,14 @@ import { COLORS } from "./scene.ts";
  * fresh glyph. Lifetimes are randomized so deaths are staggered — the field
  * always looks full moment-to-moment, but evolves over minutes.
  *
- * During the middle of its life, each star twinkles: opacity oscillates
+ * During the middle of its life, each star twinkles: brightness oscillates
  * between MIN and MAX on a randomized period (so stars are never in sync).
  *
- * Opacity stays in 0.85-1.0 — even at trough, white still reads as white.
+ * Brightness stays in 0.85-1.0 of full — even at trough, the star still
+ * reads as a star. Brightness is implemented as an fg-color lerp between
+ * COLORS.bg and COLORS.star (rather than opentui's `opacity` property) so
+ * fades track the active theme correctly on light terminals and don't
+ * require painting a renderer bg that would kill terminal translucency.
  */
 
 const STAR_GLYPHS = ["★", "✦", "✶", "✷", "✧", "*", "·"];
@@ -126,14 +131,22 @@ export class Ambient {
     const initialOpacity =
       MIN_OPACITY + Math.random() * (MAX_OPACITY - MIN_OPACITY);
 
+    // Initial fg: invisible (theme bg) if we'll fade in, or pre-faded to the
+    // post-fade-in level if this star is "born aged" past fade-in. No more
+    // opentui opacity — fade is done via fg-color lerp toward COLORS.bg so
+    // the fade direction tracks the active theme instead of opentui's
+    // hardcoded transparent-black.
+    const initialFg =
+      bornAgedMs > FADE_IN_MS
+        ? lerpRgba(COLORS.bg, COLORS.star, initialOpacity)
+        : COLORS.bg;
     const star = new TextRenderable(this.renderer, {
       id,
       content: glyph,
-      fg: COLORS.star,
+      fg: initialFg,
       position: "absolute",
       left: x,
       top: y,
-      opacity: bornAgedMs > FADE_IN_MS ? initialOpacity : 0,
       zIndex: 1,
     });
     this.surface.add(star);
@@ -164,11 +177,21 @@ export class Ambient {
         this.beginTwinkle(slot, targetOpacity, twinklePeriod, lifetime, FADE_IN_MS);
       },
     });
-    tl.add(slot.star, {
-      duration: FADE_IN_MS,
-      ease: "inOutSine",
-      opacity: targetOpacity,
-    });
+    tl.add(
+      { _t: 0 },
+      {
+        duration: FADE_IN_MS,
+        ease: "inOutSine",
+        _t: 1,
+        onUpdate: (anim) => {
+          slot.star.fg = lerpRgba(
+            COLORS.bg,
+            COLORS.star,
+            anim.progress * targetOpacity,
+          );
+        },
+      },
+    );
     slot.fadeTl = tl;
     tl.play();
   }
@@ -190,13 +213,21 @@ export class Ambient {
     // looping twinkle animation to keep running. (Default 1000ms would stop
     // after a single second.)
     const tl = createTimeline({ duration: Number.MAX_SAFE_INTEGER });
-    tl.add(slot.star, {
-      duration: twinklePeriod,
-      ease: "inOutSine",
-      opacity: targetOpacity,
-      loop: true,
-      alternate: true,
-    });
+    tl.add(
+      { _t: 0 },
+      {
+        duration: twinklePeriod,
+        ease: "inOutSine",
+        _t: 1,
+        loop: true,
+        alternate: true,
+        onUpdate: (anim) => {
+          const opacity =
+            currentOpacity + (targetOpacity - currentOpacity) * anim.progress;
+          slot.star.fg = lerpRgba(COLORS.bg, COLORS.star, opacity);
+        },
+      },
+    );
     slot.twinkleTl = tl;
     tl.play();
 
@@ -211,6 +242,10 @@ export class Ambient {
     slot.twinkleTl?.pause();
     slot.twinkleTl = undefined;
 
+    // Capture the star's current fg as the lerp start — twinkle could have
+    // left it anywhere in the [COLORS.bg, COLORS.star]-scaled range.
+    const fromColor = slot.star.fg ?? COLORS.star;
+
     const tl = createTimeline({
       duration: FADE_OUT_MS,
       onComplete: () => {
@@ -218,11 +253,17 @@ export class Ambient {
         this.replaceSlot(slot);
       },
     });
-    tl.add(slot.star, {
-      duration: FADE_OUT_MS,
-      ease: "inOutSine",
-      opacity: 0,
-    });
+    tl.add(
+      { _t: 0 },
+      {
+        duration: FADE_OUT_MS,
+        ease: "inOutSine",
+        _t: 1,
+        onUpdate: (anim) => {
+          slot.star.fg = lerpRgba(fromColor, COLORS.bg, anim.progress);
+        },
+      },
+    );
     slot.fadeTl = tl;
     tl.play();
   }

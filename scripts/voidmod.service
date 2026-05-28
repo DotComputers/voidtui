@@ -1,0 +1,18 @@
+[Unit]
+Description=Void moderation sidecar (toxic-bert on Jetson GPU)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sam
+# Model loads on the GPU at startup (~15s). Bound to localhost only; the bun
+# server reaches it at http://127.0.0.1:8788 (VOID_MOD_URL default).
+Environment=VOID_MOD_PORT=8788
+# Reuses the model already in ~/.cache/huggingface; set HF_HOME to relocate.
+ExecStart=/usr/bin/python3 /home/sam/voidtui/packages/server/moderation_sidecar.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

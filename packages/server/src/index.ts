@@ -18,6 +18,8 @@ import {
   getRecentPosts,
   isHandleTaken,
   purgeExpiredPosts,
+  purgeModerationText,
+  recordModerationDrop,
   recordPost,
   recordPostAt,
   recordPostTimestamp,
@@ -25,6 +27,7 @@ import {
   tryUpdateHandle,
 } from "./store.ts";
 import { handleReleaseRequest } from "./release-routes.ts";
+import { classify, initModeration } from "./moderation.ts";
 
 const SERVER_VERSION = "0.1.0";
 const PORT = Number(process.env.PORT ?? 8787);
@@ -183,7 +186,7 @@ function handleConnect(ws: Sock, msg: ConnectMessage): void {
   pushActiveCount();
 }
 
-function handlePost(ws: Sock, msg: PostMessage): void {
+async function handlePost(ws: Sock, msg: PostMessage): Promise<void> {
   if (!ws.data.pubkeyHex || ws.data.pubkeyHex !== msg.pubkey) {
     send(ws, {
       v: PROTOCOL_VERSION,
@@ -255,11 +258,43 @@ function handlePost(ws: Sock, msg: PostMessage): void {
     return;
   }
 
-  // (LLM moderation pass is deferred; for scaffold all posts pass.)
-
+  // All validation passed. Generate identifiers and do rate-limit bookkeeping at
+  // arrival — a post counts against the author's window whether or not it is later
+  // shadow-dropped (probing the filter is not free).
   const serverId = ulid();
   const createdAt = Date.now();
   const identity = getIdentityByPubkey(msg.pubkey)!;
+  recordPostAt(msg.pubkey, createdAt);
+  recordPostTimestamp(msg.pubkey);
+
+  // Ack immediately. The client renders its own post locally off POST_OK, so the
+  // author's experience is identical whether or not the post is later dropped.
+  send(ws, {
+    v: PROTOCOL_VERSION,
+    type: "POST_OK",
+    client_id: msg.client_id,
+    server_id: serverId,
+    created_at: createdAt,
+  });
+
+  // Shadow ban: acked above, but never persisted to `posts` and never broadcast.
+  // (Persisting here previously leaked banned posts to new clients via backfill.)
+  if (ws.data.banned) return;
+
+  // Content moderation runs off the hot path and fails open. A blocked post is
+  // logged (text scrubbed at 24h) and silently dropped: no `posts` row, no broadcast.
+  const verdict = await classify(msg.body);
+  if (verdict.blocked) {
+    recordModerationDrop({
+      id: serverId,
+      pubkey: msg.pubkey,
+      category: verdict.category,
+      score: verdict.score,
+      body: msg.body,
+      created_at: createdAt,
+    });
+    return;
+  }
 
   recordPost({
     id: serverId,
@@ -269,20 +304,6 @@ function handlePost(ws: Sock, msg: PostMessage): void {
     body: msg.body,
     created_at: createdAt,
   });
-  recordPostAt(msg.pubkey, createdAt);
-  recordPostTimestamp(msg.pubkey);
-
-  send(ws, {
-    v: PROTOCOL_VERSION,
-    type: "POST_OK",
-    client_id: msg.client_id,
-    server_id: serverId,
-    created_at: createdAt,
-  });
-
-  if (ws.data.banned) {
-    return; // Shadow ban: stored, acked, never broadcast.
-  }
 
   broadcast(
     {
@@ -420,7 +441,7 @@ function handleChangeHandle(ws: Sock, msg: ChangeHandleMessage): void {
   });
 }
 
-function handleMessage(ws: Sock, raw: string | Buffer): void {
+async function handleMessage(ws: Sock, raw: string | Buffer): Promise<void> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(typeof raw === "string" ? raw : raw.toString("utf8"));
@@ -458,7 +479,7 @@ function handleMessage(ws: Sock, raw: string | Buffer): void {
       handleConnect(ws, msg);
       break;
     case "POST":
-      handlePost(ws, msg);
+      await handlePost(ws, msg);
       break;
     case "PING":
       ws.data.lastPingAt = Date.now();
@@ -471,6 +492,10 @@ function handleMessage(ws: Sock, raw: string | Buffer): void {
 }
 
 function startServer(): void {
+  // Load the moderation model in the background. Until it resolves (or if it
+  // fails), classify() fails open and all posts pass.
+  void initModeration();
+
   const server = Bun.serve<WSData, never>({
     port: PORT,
     async fetch(req, server) {
@@ -493,7 +518,7 @@ function startServer(): void {
         connections.add(ws);
       },
       message(ws, raw) {
-        handleMessage(ws, raw);
+        void handleMessage(ws, raw).catch((err) => console.error("[void] handler error", err));
       },
       close(ws) {
         connections.delete(ws);
@@ -505,6 +530,8 @@ function startServer(): void {
   setInterval(() => {
     const removed = purgeExpiredPosts(POST_RETENTION_MS);
     if (removed > 0) console.log(`[void] purged ${removed} expired posts`);
+    const scrubbed = purgeModerationText(POST_RETENTION_MS);
+    if (scrubbed > 0) console.log(`[void] scrubbed text from ${scrubbed} moderation-log rows`);
   }, 60 * 60 * 1000);
 
   setInterval(() => {
@@ -521,6 +548,9 @@ function startServer(): void {
 
 // Exposed for tests only. Production callers use Bun.serve's websocket.message.
 export const __test_handleMessage = handleMessage;
+
+// Exposed for tests only — lets handler tests observe broadcast fan-out.
+export const __test_connections = connections;
 
 if (!process.env.VOID_TEST_MODE) {
   startServer();

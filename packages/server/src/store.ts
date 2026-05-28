@@ -29,6 +29,15 @@ export type StoredPost = {
   created_at: number;
 };
 
+export type ModerationDrop = {
+  id: string;
+  pubkey: string;
+  category: string;
+  score: number;
+  body: string;
+  created_at: number;
+};
+
 const DB_PATH = process.env.VOID_DB ?? "./void.db";
 
 const db = new Database(DB_PATH, { create: true, strict: true });
@@ -54,6 +63,18 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS posts_created_at ON posts(created_at);
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS moderation_log (
+    id          TEXT PRIMARY KEY,
+    pubkey      TEXT,
+    category    TEXT NOT NULL,
+    score       REAL NOT NULL,
+    body        TEXT,
+    created_at  INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS moderation_log_created_at ON moderation_log(created_at);
 `);
 
 // Idempotent migrations — wrap each ALTER in try/catch so re-running on a
@@ -86,6 +107,15 @@ const stmtRecentPosts = db.prepare(
   "SELECT id, handle, ghost, body, created_at FROM posts WHERE created_at >= $cutoff ORDER BY created_at ASC LIMIT $limit",
 );
 const stmtPurgePosts = db.prepare("DELETE FROM posts WHERE created_at < $cutoff");
+const stmtInsertModeration = db.prepare(
+  "INSERT INTO moderation_log (id, pubkey, category, score, body, created_at) VALUES ($id, $pubkey, $category, $score, $body, $created_at)",
+);
+const stmtAllModeration = db.prepare(
+  "SELECT id, pubkey, category, score, body, created_at FROM moderation_log ORDER BY created_at ASC",
+);
+const stmtPurgeModerationText = db.prepare(
+  "UPDATE moderation_log SET body = NULL WHERE created_at < $cutoff AND body IS NOT NULL",
+);
 const stmtRecordPostAt = db.prepare(
   "UPDATE identities SET last_post_at = $t WHERE pubkey = $pubkey",
 );
@@ -196,6 +226,36 @@ export function recordPost(post: StoredPost): void {
   });
 }
 
+export function recordModerationDrop(entry: ModerationDrop): void {
+  stmtInsertModeration.run({
+    id: entry.id,
+    pubkey: entry.pubkey,
+    category: entry.category,
+    score: entry.score,
+    body: entry.body,
+    created_at: entry.created_at,
+  });
+}
+
+/** Read all moderation-log rows (oldest first). For tuning + tests. */
+export function getModerationDrops(): Array<{
+  id: string;
+  pubkey: string | null;
+  category: string;
+  score: number;
+  body: string | null;
+  created_at: number;
+}> {
+  return stmtAllModeration.all() as Array<{
+    id: string;
+    pubkey: string | null;
+    category: string;
+    score: number;
+    body: string | null;
+    created_at: number;
+  }>;
+}
+
 export function getRecentPosts(maxAgeMs: number, limit: number): RecentPost[] {
   const cutoff = Date.now() - maxAgeMs;
   const rows = stmtRecentPosts.all({ cutoff, limit }) as Array<{
@@ -218,6 +278,13 @@ export function getRecentPosts(maxAgeMs: number, limit: number): RecentPost[] {
 export function purgeExpiredPosts(maxAgeMs: number): number {
   const cutoff = Date.now() - maxAgeMs;
   const result = stmtPurgePosts.run({ cutoff });
+  return result.changes ?? 0;
+}
+
+/** Scrub post text from moderation-log rows older than the window. Rows persist; only `body` is nulled. Returns count scrubbed. */
+export function purgeModerationText(maxAgeMs: number): number {
+  const cutoff = Date.now() - maxAgeMs;
+  const result = stmtPurgeModerationText.run({ cutoff });
   return result.changes ?? 0;
 }
 
